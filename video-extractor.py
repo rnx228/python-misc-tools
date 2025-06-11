@@ -1,3 +1,8 @@
+#requirements 
+#MSVC v14.x
+#Windows 10 SDK
+#C++ CMake tools for Windows are listed (they are by default).
+
 import cv2
 import glob
 import os
