@@ -1,72 +1,63 @@
-#requirements 
-#MSVC v14.x
-#Windows 10 SDK
-#C++ CMake tools for Windows are listed (they are by default).
-
-import cv2
-import glob
 import os
-import insightface
-from insightface.app import FaceAnalysis
+import cv2
+import subprocess
+import face_alignment
+import numpy as np
+from glob import glob
 
-# Get the directory of the current script
-script_dir = os.path.dirname(os.path.abspath(__file__))
+# === CONFIGURATION ===
+video_folder = "videos"  # Folder containing input videos
+temp_frames = "temp_frames"
+output_faces = "aligned_faces"  # Final output folder
+fps = 1  # Extract 1 frame per second
+start_counter = 0
 
-# Automatically find the video file named 'input.*' in the script directory
-video_files = glob.glob(os.path.join(script_dir, 'input.*'))
-if not video_files:
-    raise FileNotFoundError("No file named 'input.*' found in the script directory.")
-video_path = video_files[0]
-print(f"Using video file: {video_path}")
+# Create folders
+os.makedirs(temp_frames, exist_ok=True)
+os.makedirs(output_faces, exist_ok=True)
 
-# Load video
-cap = cv2.VideoCapture(video_path)
+# Initialize face alignment
+fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False)
 
-# Load face detector
-app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
-app.prepare(ctx_id=-1)  # Use -1 for CPU
+# === FUNCTION TO EXTRACT FRAMES FROM VIDEO ===
+def extract_frames(video_path, frame_dir, fps=1):
+    os.makedirs(frame_dir, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-i", video_path, "-vf", f"fps={fps}",
+        os.path.join(frame_dir, "%04d.jpg")
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-# Create output directory in the script location
-output_dir = os.path.join(script_dir, 'faces')
-os.makedirs(output_dir, exist_ok=True)
+# === PROCESS ALL VIDEOS ===
+for video in sorted(glob(os.path.join(video_folder, "*.mp4"))):
+    print(f"[INFO] Processing video: {video}")
+    video_name = os.path.splitext(os.path.basename(video))[0]
+    frame_dir = os.path.join(temp_frames, video_name)
 
-# Process each frame and extract faces
-frame_count = 0
-try:
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    extract_frames(video, frame_dir, fps)
 
-        faces = app.get(frame)
-        for i, face in enumerate(faces):
-            aligned = face.aligned
+    for frame_file in sorted(glob(os.path.join(frame_dir, "*.jpg"))):
+        img = cv2.imread(frame_file)
+        if img is None:
+            continue
 
-            # Use aligned image if available, else fallback to bbox crop
-            if aligned is not None and aligned.size > 0:
-                out_img = aligned
-            else:
-                print(f"Warning: Empty aligned face on frame {frame_count}, face {i}. Falling back to bbox crop.")
-                x1, y1, x2, y2 = face.bbox.astype(int)
+        preds = fa.get_landmarks(img)
+        if preds is None:
+            continue
 
-                # Clamp coordinates to frame size
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(frame.shape[1], x2)
-                y2 = min(frame.shape[0], y2)
+        for face in preds:
+            x_min = max(int(np.min(face[:, 0])) - 20, 0)
+            y_min = max(int(np.min(face[:, 1])) - 20, 0)
+            x_max = min(int(np.max(face[:, 0])) + 20, img.shape[1])
+            y_max = min(int(np.max(face[:, 1])) + 20, img.shape[0])
 
-                out_img = frame[y1:y2, x1:x2]
+            aligned_face = img[y_min:y_max, x_min:x_max]
+            aligned_face = cv2.resize(aligned_face, (224, 224))
 
-            # Save image if valid
-            if out_img is not None and out_img.size > 0:
-                out_path = os.path.join(output_dir, f'frame{frame_count:05}_face{i}.png')
-                cv2.imwrite(out_path, out_img)
-            else:
-                print(f"Error: Could not save face image from frame {frame_count}, face {i}")
+            out_path = os.path.join(output_faces, f"{start_counter:05d}.jpg")
+            cv2.imwrite(out_path, aligned_face)
+            start_counter += 1
 
-        frame_count += 1
-finally:
-    cap.release()
+print(f"\n✅ Done! Total aligned faces saved to: {output_faces}")
 
-print("Face extraction completed.")
 
